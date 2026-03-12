@@ -1,0 +1,16 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const itemController_1 = require("../controllers/itemController");
+const importController_1 = require("../controllers/importController");
+const authMiddleware_1 = require("../middlewares/authMiddleware");
+const router = (0, express_1.Router)();
+router.use(authMiddleware_1.authenticate);
+router.post('/import', importController_1.importItemsExcel);
+router.get('/', itemController_1.getItems);
+router.post('/bulk', itemController_1.importItems);
+router.get('/:id', itemController_1.getItemById);
+router.post('/', itemController_1.createItem);
+router.put('/:id', itemController_1.updateItem);
+router.delete('/:id', itemController_1.deleteItem);
+exports.default = router;

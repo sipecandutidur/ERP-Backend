@@ -1,0 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const purchaseOrderController_1 = require("../controllers/purchaseOrderController");
+const authMiddleware_1 = require("../middlewares/authMiddleware");
+const router = (0, express_1.Router)();
+router.use(authMiddleware_1.authenticate);
+router.get('/', purchaseOrderController_1.getPurchaseOrders);
+router.get('/:id', purchaseOrderController_1.getPurchaseOrderById);
+router.post('/generate/from-quotation/:quotationId', purchaseOrderController_1.generateFromQuotation);
+router.patch('/:id/status', purchaseOrderController_1.updatePurchaseOrderStatus);
+router.patch('/:id/items/:itemId/status', purchaseOrderController_1.updatePurchaseOrderItemStatus);
+exports.default = router;

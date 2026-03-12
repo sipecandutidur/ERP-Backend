@@ -1,0 +1,509 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ==========================================
+// USER & ROLE MANAGEMENT
+// ==========================================
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quotations     Quotation[]       @relation("UserQuotations")
+  vendorQuotes   VendorQuotation[] @relation("UserVendorQuotes")
+  purchaseOrders PurchaseOrder[]   @relation("UserPurchaseOrders")
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique // e.g., ADMIN, SALES, PROCUREMENT, FINANCE
+  description String?
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==========================================
+// CUSTOMER & DISTRIBUTOR
+// ==========================================
+
+model Organization {
+  id        String     @id @default(uuid())
+  code      String     @unique // e.g., ORG-001
+  name      String
+  address   String?
+  phone     String?
+  email     String?
+  website   String?
+  npwp      String?
+  customers Customer[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model Customer {
+  id             String          @id @default(uuid())
+  code           String          @unique // Auto-generated code
+  name           String
+  address        String?
+  district       String?
+  phone          String?
+  email          String?
+  npwp           String?
+  organizationId String?
+  organization   Organization?   @relation(fields: [organizationId], references: [id])
+  contacts       ContactPerson[]
+  quotations     Quotation[]
+  invoices       Invoice[]
+  projects       Project[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model Distributor {
+  id                String            @id @default(uuid())
+  code              String            @unique
+  name              String
+  address           String?
+  district          String?
+  phone             String?
+  email             String?
+  website           String?
+  npwp              String?
+  bankName          String?
+  bankAccountName   String?
+  bankAccountNumber String?
+  vendorQuotations  VendorQuotation[]
+  purchaseOrders    PurchaseOrder[]
+  itemDistributors  ItemDistributor[]
+  quotationItems    QuotationItem[]
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+}
+
+model ContactPerson {
+  id         String    @id @default(uuid())
+  name       String
+  phone      String?
+  email      String?
+  position   String?
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+// ==========================================
+// PROJECTS
+// ==========================================
+
+enum ProjectStatus {
+  PENDING
+  ONGOING
+  COMPLETED
+  CANCELLED
+}
+
+enum PipelineStage {
+  BARU
+  BERKUALIFIKASI
+  PROPOSISI
+  BERHASIL
+  REJECT
+}
+
+model Project {
+  id        String        @id @default(uuid())
+  code      String?       @unique // Auto-generated PRJ-YYMM-XXXX
+  spkNumber String        @unique // Number SP/SPK
+  name      String // Name Project
+  status    ProjectStatus @default(PENDING) // Status Project
+
+  pipelineStage PipelineStage @default(BARU) // Kanban pipeline stage
+  stageOrder    Int           @default(0)    // Order within the stage column
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  value          Float @default(0) // Project Value
+  initialCapital Float @default(0) // Initial Capital
+
+  rab        RAB?
+  expenses   Expense[]
+  quotations Quotation[]
+  documents  ProjectDocument[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==========================================
+// INVENTORY / ITEMS
+// ==========================================
+
+model Item {
+  id          String  @id @default(uuid())
+  code        String  @unique
+  name        String
+  description String?
+  category    String?
+  unit        String // e.g., Pcs, Box, Liter
+  stock       Float   @default(0)
+
+  itemDistributors ItemDistributor[]
+
+  quotationItems     QuotationItem[]
+  vendorQuoteItems   VendorQuotationItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  deliveryNoteItems  DeliveryNoteItem[]
+  invoiceItems       InvoiceItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ItemDistributor {
+  id            String      @id @default(uuid())
+  itemId        String
+  item          Item        @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  distributorId String
+  distributor   Distributor @relation(fields: [distributorId], references: [id], onDelete: Cascade)
+
+  basePrice Float @default(0)
+  discount  Float @default(0) // Percentage
+  tax       Float @default(0) // Percentage
+  margin    Float @default(0) // Percentage
+  sellPrice Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([itemId, distributorId])
+}
+
+// ==========================================
+// QUOTATIONS (SALES & VENDOR)
+// ==========================================
+
+model Quotation {
+  id          String   @id @default(uuid())
+  quoteNumber String   @unique
+  date        DateTime @default(now())
+  validUntil  DateTime?
+  status      String   @default("DRAFT") // DRAFT, SENT, ACCEPTED, REJECTED
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  userId String
+  user   User   @relation("UserQuotations", fields: [userId], references: [id])
+
+  items         QuotationItem[]
+  deliveryNotes DeliveryNote[]
+  invoices      Invoice[]
+
+  subtotal Float @default(0)
+  discount Float @default(0) // Percentage or fixed amount
+  tax      Float @default(0)
+  total    Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model QuotationItem {
+  id            String       @id @default(uuid())
+  quotationId   String
+  quotation     Quotation    @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  itemId        String
+  item          Item         @relation(fields: [itemId], references: [id])
+  distributorId String?
+  distributor   Distributor? @relation(fields: [distributorId], references: [id])
+  quantity      Float
+  price         Float // Selling price at the time of quotation
+  availability  String?
+  tax           Float        @default(0)
+  total         Float
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model VendorQuotation {
+  id       String   @id @default(uuid())
+  vqNumber String   @unique
+  date     DateTime @default(now())
+  status   String   @default("DRAFT") // DRAFT, SENT, CONFIRMED
+
+  distributorId String
+  distributor   Distributor @relation(fields: [distributorId], references: [id])
+
+  projectCode String? // Extracted from Quotation.Project if it exists during copy
+
+  userId String
+  user   User   @relation("UserVendorQuotes", fields: [userId], references: [id])
+
+  items VendorQuotationItem[]
+
+  total     Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model VendorQuotationItem {
+  id                String          @id @default(uuid())
+  vendorQuotationId String
+  vendorQuotation   VendorQuotation @relation(fields: [vendorQuotationId], references: [id], onDelete: Cascade)
+  itemId            String
+  item              Item            @relation(fields: [itemId], references: [id])
+  quantity          Float
+  price             Float // Base price at the time of order
+  total             Float
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+
+// ==========================================
+// PURCHASE ORDERS (VENDOR)
+// ==========================================
+
+model PurchaseOrder {
+  id       String   @id @default(uuid())
+  poNumber String   @unique
+  date     DateTime @default(now())
+  status   String   @default("DRAFT") // DRAFT, SENT, CONFIRMED, COMPLETED
+
+  distributorId String
+  distributor   Distributor @relation(fields: [distributorId], references: [id])
+
+  projectCode String? // Extracted from Quotation.Project if it exists during copy
+
+  userId String
+  user   User   @relation("UserPurchaseOrders", fields: [userId], references: [id])
+
+  items PurchaseOrderItem[]
+
+  total     Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PurchaseOrderItem {
+  id                String        @id @default(uuid())
+  purchaseOrderId   String
+  purchaseOrder     PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  itemId            String
+  item              Item          @relation(fields: [itemId], references: [id])
+  quantity          Float
+  price             Float // Base price / Modal
+  total             Float
+  fulfillmentStatus String        @default("REQUESTED") // REQUESTED, PAID, IN_WAREHOUSE, DELIVERED
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+// ==========================================
+// DELIVERY NOTES
+// ==========================================
+
+model DeliveryNote {
+  id       String   @id @default(uuid())
+  dnNumber String   @unique
+  date     DateTime @default(now())
+  status   String   @default("PENDING") // PENDING, DELIVERED, CANCELLED
+
+  quotationId String?
+  quotation   Quotation? @relation(fields: [quotationId], references: [id])
+
+  items DeliveryNoteItem[]
+
+  driverName    String?
+  vehicleNumber String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model DeliveryNoteItem {
+  id             String       @id @default(uuid())
+  deliveryNoteId String
+  deliveryNote   DeliveryNote @relation(fields: [deliveryNoteId], references: [id], onDelete: Cascade)
+  itemId         String
+  item           Item         @relation(fields: [itemId], references: [id])
+  quantityLoad   Float
+  quantitySent   Float
+  note           String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+// ==========================================
+// INVOICES & ACCOUNTING
+// ==========================================
+
+model Invoice {
+  id            String    @id @default(uuid())
+  invoiceNumber String    @unique
+  date          DateTime  @default(now())
+  dueDate       DateTime?
+  status        String    @default("UNPAID") // UNPAID, PARTIAL, PAID, OVERDUE
+
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  quotationId String?
+  quotation   Quotation? @relation(fields: [quotationId], references: [id])
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  subtotal   Float @default(0)
+  tax        Float @default(0)
+  total      Float @default(0)
+  amountPaid Float @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model InvoiceItem {
+  id        String   @id @default(uuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  itemId    String
+  item      Item     @relation(fields: [itemId], references: [id])
+  quantity  Float
+  price     Float
+  total     Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id            String   @id @default(uuid())
+  paymentNumber String   @unique
+  date          DateTime @default(now())
+  amount        Float
+  method        String // CASH, TRANSFER, GIRO
+  reference     String? // Transfer receipt number, etc.
+
+  invoiceId     String
+  invoice       Invoice  @relation(fields: [invoiceId], references: [id])
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  cashFlow      CashFlowTransaction?
+}
+
+// Note: Advanced accounting (Chart of Accounts, Journal Entries)
+// will be simplified for ERP basic operations or expanded later.
+
+// ==========================================
+// RENCANA ANGGARAN BIAYA (RAB)
+// ==========================================
+
+model RAB {
+  id                 String    @id @default(uuid())
+  projectId          String    @unique
+  project            Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  totalEstimatedCost Float     @default(0)
+  items              RABItem[]
+
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+model RABItem {
+  id          String   @id @default(uuid())
+  rabId       String
+  rab         RAB      @relation(fields: [rabId], references: [id], onDelete: Cascade)
+
+  description String
+  quantity    Float
+  unit        String   // e.g., Pcs, Unit, Ls, Lot
+  unitPrice   Float
+  totalPrice  Float
+  status      String   @default("REQUEST")
+  supplier    String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ==========================================
+// EXPENSES (PENGELUARAN)
+// ==========================================
+
+model Expense {
+  id            String   @id @default(uuid())
+  expenseNumber String   @unique // e.g. EXP-YYMM-XXXX
+  date          DateTime @default(now())
+
+  projectId     String?
+  project       Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  description   String
+  amount        Float
+  category      String?  // e.g., Material, Operational, Salary, Tools
+  receipt       String?  // Optional image or document link for proof
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  cashFlow      CashFlowTransaction?
+}
+
+// ==========================================
+// PROJECT DOCUMENTS (MANUAL UPLOADS)
+// ==========================================
+
+model ProjectDocument {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  name      String   // e.g. "Surat Kontrak SP/SPK"
+  fileUrl   String   // The path where the file is stored locally
+  type      String?  // Optional mime-type or standard category
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ==========================================
+// ACCOUNTING (Buku Kas / Ledger)
+// ==========================================
+
+model CashFlowTransaction {
+  id          String   @id @default(uuid())
+  date        DateTime @default(now())
+  type        String   @default("INCOME") // INCOME / EXPENSE
+  amount      Float
+  description String
+  category    String?  // Operational, Project Material, Marketing, etc.
+
+  // Relations to auto-fill records
+  expenseId   String?  @unique
+  expense     Expense? @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+
+  paymentId   String?  @unique
+  payment     Payment? @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
