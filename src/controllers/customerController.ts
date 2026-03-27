@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../prisma';
 
 export const getCustomers = async (req: Request, res: Response): Promise<void> => {
-  const customers = await prisma.customer.findMany({
+  const customers = await (prisma.customer as any).findMany({
     include: { contacts: true, organization: true },
     orderBy: { createdAt: 'desc' },
   });
@@ -11,7 +11,7 @@ export const getCustomers = async (req: Request, res: Response): Promise<void> =
 
 export const getCustomerById = async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
-  const customer = await prisma.customer.findUnique({
+  const customer = await (prisma.customer as any).findUnique({
     where: { id },
     include: { contacts: true, organization: true },
   });
@@ -33,7 +33,7 @@ export const createCustomer = async (req: Request, res: Response): Promise<void>
   }
 
   // Check for existing customer to prevent duplicates
-  const existingCustomer = await prisma.customer.findFirst({
+  const existingCustomer = await (prisma.customer as any).findFirst({
     where: { name: { equals: name, mode: 'insensitive' } }
   });
 
@@ -43,7 +43,7 @@ export const createCustomer = async (req: Request, res: Response): Promise<void>
   }
 
   // Auto-generate code e.g. CUST-0001
-  const lastCustomer = await prisma.customer.findFirst({
+  const lastCustomer = await (prisma.customer as any).findFirst({
     orderBy: { createdAt: 'desc' },
   });
 
@@ -55,11 +55,11 @@ export const createCustomer = async (req: Request, res: Response): Promise<void>
     }
   } else if (lastCustomer) {
      // If last customer doesn't have CUST- prefix, fallback to count
-     const count = await prisma.customer.count();
+     const count = await (prisma.customer as any).count();
      code = `CUST-${(count + 1).toString().padStart(4, '0')}`;
   }
 
-  const customer = await prisma.customer.create({
+  const customer = await (prisma.customer as any).create({
     data: {
       code,
       name,
@@ -93,7 +93,7 @@ export const updateCustomer = async (req: Request, res: Response): Promise<void>
   if (organizationId !== undefined) dataToUpdate.organizationId = organizationId;
 
   try {
-    const customer = await prisma.customer.update({
+    const customer = await (prisma.customer as any).update({
       where: { id },
       data: dataToUpdate,
       include: { contacts: true, organization: true },
@@ -108,8 +108,8 @@ export const deleteCustomer = async (req: Request, res: Response): Promise<void>
   const { id } = req.params as { id: string };
   try {
     // Delete related contacts first
-    await prisma.contactPerson.deleteMany({ where: { customerId: id } });
-    await prisma.customer.delete({ where: { id } });
+    await (prisma.contactPerson as any).deleteMany({ where: { customerId: id } });
+    await (prisma.customer as any).delete({ where: { id } });
     res.status(204).send();
   } catch (error) {
     res.status(400).json({ status: 'error', message: 'Error deleting customer or related records exist' });

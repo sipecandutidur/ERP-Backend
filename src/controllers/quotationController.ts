@@ -1,35 +1,34 @@
 import { Request, Response } from 'express';
 import prisma from '../prisma';
-import { bankersRound } from '../utils/math';
+import { logActivity } from '../utils/auditLogger';
 
 export const getQuotations = async (req: Request, res: Response): Promise<void> => {
-  const quotations = await prisma.quotation.findMany({
+  const quotations = await (prisma.quotation as any).findMany({
     include: {
-      customer: true,
-      project: true,
-      user: { select: { id: true, name: true } },
+      customer: {
+        select: { name: true },
+      },
     },
-    orderBy: { createdAt: 'desc' }
+    orderBy: { createdAt: 'desc' },
   });
   res.status(200).json({ status: 'success', data: { quotations } });
 };
 
 export const getQuotationById = async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
-  const quotation = await prisma.quotation.findUnique({
+  const quotation = await (prisma.quotation as any).findUnique({
     where: { id },
     include: {
-      customer: { include: { organization: true } },
-      project: { include: { customer: { include: { organization: true } } } },
-      user: { select: { id: true, name: true } },
+      customer: {
+        include: { organization: true },
+      },
       items: {
-        include: {
-          item: {
-            include: { itemDistributors: true }
-          },
-          distributor: true
-        }
-      }
+        include: { item: true, distributor: true },
+      },
+      project: true,
+      user: {
+        select: { name: true, email: true },
+      },
     },
   });
 
@@ -42,144 +41,122 @@ export const getQuotationById = async (req: Request, res: Response): Promise<voi
 };
 
 export const createQuotation = async (req: Request | any, res: Response): Promise<void> => {
-  const { customerId, projectId, items, discount, tax, date, validUntil } = req.body;
-  const userId = req.user?.id;
+  const { customerId, projectId, date, validUntil, subtotal, discount, tax, total, items } = req.body;
+
+  console.log("Create Quotation Body:", JSON.stringify(req.body, null, 2));
 
   if (!customerId || !items || items.length === 0) {
-    res.status(400).json({ status: 'error', message: 'Missing required fields' });
+    console.log("Validation failed:", { customerId: !!customerId, items: !!items, itemsLength: items?.length });
+    res.status(400).json({ status: 'error', message: 'customerId and items are required' });
     return;
   }
 
-  const count = await prisma.quotation.count();
-  const quoteNumber = `QUO-${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, '0')}-${(count + 1).toString().padStart(4, '0')}`;
+  try {
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const count = await (prisma.quotation as any).count({
+      where: { createdAt: { gte: startOfMonth } }
+    });
+    const quoteNumber = `QUO-${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, '0')}-${(count + 1).toString().padStart(4, '0')}`;
 
-  // Calculate totals
-  let subtotal = 0;
-  let totalDiscount = 0;
-  let totalTax = 0;
+    const quotation = await (prisma.quotation as any).create({
+      data: {
+        quoteNumber,
+        customerId,
+        projectId,
+        userId: (req as any).user?.id,
+        date: date ? new Date(date) : new Date(),
+        validUntil: validUntil ? new Date(validUntil) : null,
+        subtotal: Number(subtotal) || 0,
+        discount: Number(discount) || 0,
+        tax: Number(tax) || 0,
+        total: Number(total) || 0,
+        items: {
+          create: items.map((item: any) => ({
+            itemId: item.itemId,
+            quantity: Number(item.quantity),
+            price: Number(item.price),
+            total: Number(item.total),
+            distributorId: item.distributorId,
+            availability: item.availability,
+            tax: Number(item.tax || 0),
+          })),
+        },
+      },
+    });
 
-  const processedItems = items.map((i: any) => {
-    // Frontend sends 'unitPrice', but schema holds 'price'
-    const actualPrice = i.unitPrice ?? i.price ?? 0;
-    const itemDiscount = i.discount || 0;
-    const itemTax = i.tax || 0;
+    await logActivity({
+      action: 'CREATE',
+      entity: 'Quotation',
+      entityId: quotation.id,
+      details: `Quotation "${quotation.quoteNumber}" created`,
+      userId: req.user?.id,
+      userName: req.user?.name,
+    });
 
-    const rowSubtotal = i.quantity * actualPrice;
-    const rowDiscAmount = bankersRound(rowSubtotal * (itemDiscount / 100));
-    const rowAfterDisc = rowSubtotal - rowDiscAmount;
-    const rowTaxAmount = bankersRound(rowAfterDisc * (itemTax / 100));
-    const rowFinalTotal = rowAfterDisc; // Tax is collected globally, not inside row total
-
-    subtotal += rowSubtotal;
-    totalDiscount += rowDiscAmount;
-    totalTax += rowTaxAmount;
-
-    return {
-      itemId: i.itemId,
-      distributorId: i.distributorId || null,
-      quantity: i.quantity,
-      price: actualPrice,
-      availability: i.availability || null,
-      tax: itemTax,
-      total: rowFinalTotal,
-    };
-  });
-
-  const total = subtotal - totalDiscount + totalTax;
-
-  const quotation = await prisma.quotation.create({
-    data: {
-      quoteNumber,
-      customerId,
-      projectId,
-      userId,
-      date: date ? new Date(date) : new Date(),
-      validUntil: validUntil ? new Date(validUntil) : null,
-      subtotal,
-      discount: totalDiscount,
-      tax: totalTax,
-      total,
-      items: {
-        create: processedItems
-      }
-    },
-    include: { items: true },
-  });
-
-  res.status(201).json({ status: 'success', data: { quotation } });
+    res.status(201).json({ status: 'success', data: { quotation } });
+  } catch (error: any) {
+    console.error("Create quotation error:", error);
+    if (error.code === 'P2002') {
+      res.status(400).json({ status: 'error', message: 'Quotation number already exists' });
+      return;
+    }
+    res.status(500).json({ status: 'error', message: 'Failed to create quotation' });
+  }
 };
 
 export const updateQuotation = async (req: Request | any, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
-  const { customerId, projectId, items, discount, tax, date, validUntil } = req.body;
-
-  if (!customerId || !items || items.length === 0) {
-    res.status(400).json({ status: 'error', message: 'Missing required fields' });
-    return;
-  }
-
-  // Calculate totals
-  let subtotal = 0;
-  let totalDiscount = 0;
-  let totalTax = 0;
-
-  const processedItems = items.map((i: any) => {
-    // Frontend sends 'unitPrice', but schema holds 'price'
-    const actualPrice = i.unitPrice ?? i.price ?? 0;
-    const itemDiscount = i.discount || 0;
-    const itemTax = i.tax || 0;
-
-    const rowSubtotal = i.quantity * actualPrice;
-    const rowDiscAmount = bankersRound(rowSubtotal * (itemDiscount / 100));
-    const rowAfterDisc = rowSubtotal - rowDiscAmount;
-    const rowTaxAmount = bankersRound(rowAfterDisc * (itemTax / 100));
-    const rowFinalTotal = rowAfterDisc; // Tax is collected globally, not inside row total
-
-    subtotal += rowSubtotal;
-    totalDiscount += rowDiscAmount;
-    totalTax += rowTaxAmount;
-
-    return {
-      itemId: i.itemId,
-      distributorId: i.distributorId || null,
-      quantity: i.quantity,
-      price: actualPrice,
-      availability: i.availability || null,
-      tax: itemTax,
-      total: rowFinalTotal,
-    };
-  });
-
-  const total = subtotal - totalDiscount + totalTax;
+  const { quoteNumber, customerId, projectId, date, validUntil, subtotal, discount, tax, total, items } = req.body;
 
   try {
-    const quotation = await prisma.quotation.update({
+    // Basic update logic: delete items and recreate them
+    if (items) {
+      await (prisma as any).quotationItem.deleteMany({ where: { quotationId: id } });
+    }
+
+    const quotation = await (prisma.quotation as any).update({
       where: { id },
       data: {
+        quoteNumber: quoteNumber || undefined,
         customerId,
         projectId,
         date: date ? new Date(date) : undefined,
-        validUntil: validUntil ? new Date(validUntil) : null,
-        subtotal,
-        discount: totalDiscount,
-        tax: totalTax,
-        total,
-        items: {
-          deleteMany: {}, // Remove all existing items
-          create: processedItems // Add the new items
-        }
+        validUntil: validUntil !== undefined ? (validUntil ? new Date(validUntil) : null) : undefined,
+        subtotal: subtotal !== undefined ? Number(subtotal) : undefined,
+        discount: discount !== undefined ? Number(discount) : undefined,
+        tax: tax !== undefined ? Number(tax) : undefined,
+        total: total !== undefined ? Number(total) : undefined,
+        items: items ? {
+          create: items.map((item: any) => ({
+            itemId: item.itemId,
+            quantity: Number(item.quantity),
+            price: Number(item.price),
+            total: Number(item.total),
+            distributorId: item.distributorId,
+            availability: item.availability,
+            tax: Number(item.tax || 0),
+          })),
+        } : undefined,
       },
-      include: { items: true },
+    });
+
+    await logActivity({
+      action: 'UPDATE',
+      entity: 'Quotation',
+      entityId: quotation.id,
+      details: `Quotation "${quotation.quoteNumber}" updated`,
+      userId: req.user?.id,
+      userName: req.user?.name,
     });
 
     res.status(200).json({ status: 'success', data: { quotation } });
-  } catch (error: any) {
-    console.error('Error updating quotation:', error);
-    res.status(400).json({ status: 'error', message: `Error updating quotation: ${error.message || error}` });
+  } catch (error) {
+    console.error("Update quotation error:", error);
+    res.status(400).json({ status: 'error', message: 'Error updating quotation' });
   }
 };
 
-export const updateQuotationStatus = async (req: Request, res: Response): Promise<void> => {
+export const updateQuotationStatus = async (req: Request | any, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
   const { status } = req.body;
 
@@ -189,12 +166,32 @@ export const updateQuotationStatus = async (req: Request, res: Response): Promis
   }
 
   try {
-    const quotation = await prisma.quotation.update({
+    const quotation = await (prisma.quotation as any).update({
       where: { id },
       data: { status },
     });
+
+    await logActivity({
+      action: 'UPDATE_STATUS',
+      entity: 'Quotation',
+      entityId: quotation.id,
+      details: `Quotation "${quotation.quoteNumber}" status updated to ${status}`,
+      userId: req.user?.id,
+      userName: req.user?.name,
+    });
+
     res.status(200).json({ status: 'success', data: { quotation } });
   } catch (error) {
     res.status(400).json({ status: 'error', message: 'Error updating quotation status' });
+  }
+};
+
+export const deleteQuotation = async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params as { id: string };
+  try {
+    await (prisma.quotation as any).delete({ where: { id } });
+    res.status(204).send();
+  } catch (error) {
+    res.status(400).json({ status: 'error', message: 'Error deleting quotation' });
   }
 };

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import prisma from '../prisma';
 
 export const getDeliveryNotes = async (req: Request, res: Response): Promise<void> => {
-  const deliveryNotes = await prisma.deliveryNote.findMany({
+  const deliveryNotes = await (prisma.deliveryNote as any).findMany({
     include: {
       quotation: {
         include: { customer: true }
@@ -15,7 +15,7 @@ export const getDeliveryNotes = async (req: Request, res: Response): Promise<voi
 
 export const getDeliveryNoteById = async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
-  const deliveryNote = await prisma.deliveryNote.findUnique({
+  const deliveryNote = await (prisma.deliveryNote as any).findUnique({
     where: { id },
     include: {
       quotation: {
@@ -23,7 +23,7 @@ export const getDeliveryNoteById = async (req: Request, res: Response): Promise<
           customer: {
             include: { organization: true }
           },
-          project: true // Include project data
+          project: true
         }
       },
       items: {
@@ -48,7 +48,7 @@ export const createDeliveryNote = async (req: Request, res: Response): Promise<v
     return;
   }
 
-  const existingDn = await prisma.deliveryNote.findUnique({ where: { dnNumber } });
+  const existingDn = await (prisma.deliveryNote as any).findUnique({ where: { dnNumber } });
   if (existingDn) {
     res.status(400).json({ status: 'error', message: 'Delivery Note number already exists' });
     return;
@@ -57,10 +57,10 @@ export const createDeliveryNote = async (req: Request, res: Response): Promise<v
   const processedItems = items.map((i: any) => ({
     itemId: i.itemId,
     quantityLoad: i.quantityLoad,
-    quantitySent: i.quantitySent || i.quantityLoad, // default equals to load
+    quantitySent: i.quantitySent || i.quantityLoad,
   }));
 
-  const deliveryNote = await prisma.deliveryNote.create({
+  const deliveryNote = await (prisma.deliveryNote as any).create({
     data: {
       dnNumber,
       quotationId,
@@ -86,7 +86,7 @@ export const updateDeliveryNoteStatus = async (req: Request, res: Response): Pro
   }
 
   try {
-    const deliveryNote = await prisma.deliveryNote.update({
+    const deliveryNote = await (prisma.deliveryNote as any).update({
       where: { id },
       data: { status },
     });
@@ -100,7 +100,7 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
   const { quotationId } = req.params;
   const { itemIds }: { itemIds?: string[] } = req.body || {};
 
-  const quotation = await prisma.quotation.findUnique({
+  const quotation = await (prisma.quotation as any).findUnique({
     where: { id: quotationId },
     include: { items: true }
   });
@@ -115,14 +115,12 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
     return;
   }
 
-  // Filter items if specific IDs were provided
   const sourceItems = (itemIds && itemIds.length > 0)
     ? quotation.items.filter((i: any) => itemIds.includes(i.id))
     : quotation.items;
 
-  // Get highest sequence number for current month
   const currentYearMonth = `${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, '0')}`;
-  const lastDn = await prisma.deliveryNote.findFirst({
+  const lastDn = await (prisma.deliveryNote as any).findFirst({
     where: { dnNumber: { startsWith: `DN-${currentYearMonth}-` } },
     orderBy: { dnNumber: 'desc' },
   });
@@ -145,7 +143,7 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
     quantitySent: i.quantity,
   }));
 
-  const deliveryNote = await prisma.deliveryNote.create({
+  const deliveryNote = await (prisma.deliveryNote as any).create({
     data: {
       dnNumber,
       quotationId: quotation.id,
@@ -165,10 +163,10 @@ export const updateDeliveryNoteItem = async (req: Request, res: Response): Promi
   const { quantitySent, note } = req.body;
 
   try {
-    const item = await prisma.deliveryNoteItem.update({
+    const item = await (prisma.deliveryNoteItem as any).update({
       where: {
         id: itemId,
-        deliveryNoteId: id, // Ensure item belongs to this DN
+        deliveryNoteId: id,
       },
       data: {
         quantitySent: quantitySent !== undefined ? Number(quantitySent) : undefined,

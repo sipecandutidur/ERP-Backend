@@ -5,6 +5,7 @@ import prisma from '../prisma';
 export interface AuthRequest extends Request {
   user?: {
     id: string;
+    name: string;
     roleId: string;
     roleName: string;
   };
@@ -37,8 +38,9 @@ export const authenticate = async (
 
     req.user = {
       id: user.id,
+      name: user.name,
       roleId: user.roleId,
-      roleName: user.role.name,
+      roleName: (user.role as any).name,
     };
 
     next();

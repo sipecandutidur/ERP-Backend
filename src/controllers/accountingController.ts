@@ -20,16 +20,15 @@ export const getFinancialSummary = async (req: Request, res: Response): Promise<
       totalReceivables += (inv.total - inv.amountPaid);
     });
 
-    // Total expenses could be calculated from Vendor Quotations or a separate Expenses model.
-    // Assuming confirmed Vendor Quotes mean ordered & paid for basic logic
-    const vendorQuotes = await prisma.vendorQuotation.findMany({
-      where: { status: 'CONFIRMED' },
+    // Total expenses should be calculated from confirmed Purchase Orders.
+    const purchaseOrders = await prisma.purchaseOrder.findMany({
+      where: { status: { in: ['CONFIRMED', 'COMPLETED', 'DELIVERED', 'RECEIVED'] } }, // Include typical active/completed statuses
       select: { total: true }
     });
 
     let totalExpenses = 0;
-    vendorQuotes.forEach((vq: any) => {
-      totalExpenses += vq.total;
+    purchaseOrders.forEach((po: any) => {
+      totalExpenses += po.total;
     });
 
     const netProfit = totalRevenue - totalExpenses;

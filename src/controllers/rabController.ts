@@ -28,7 +28,7 @@ export const getRABByProject = async (req: Request, res: Response): Promise<void
 export const addRABItem = async (req: Request, res: Response): Promise<void> => {
   try {
     const { id: projectId } = req.params as { id: string };
-    const { description, quantity, unit, unitPrice, status, supplier } = req.body;
+    const { description, quantity, unit, unitPrice, status, supplier, itemId } = req.body;
 
     let rab = await prisma.rAB.findUnique({ where: { projectId } });
     if (!rab) {
@@ -40,6 +40,7 @@ export const addRABItem = async (req: Request, res: Response): Promise<void> => 
     const newItem = await prisma.rABItem.create({
       data: {
         rabId: rab.id,
+        itemId: itemId || null,
         description,
         quantity: Number(quantity),
         unit,
@@ -60,6 +61,11 @@ export const addRABItem = async (req: Request, res: Response): Promise<void> => 
     await prisma.rAB.update({
       where: { id: rab.id },
       data: { totalEstimatedCost: newTotal }
+    });
+
+    await prisma.project.update({
+      where: { id: rab.projectId },
+      data: { initialCapital: newTotal }
     });
 
     res.status(201).json({ success: true, data: newItem });
@@ -101,10 +107,17 @@ export const generateRABFromQuotation = async (req: Request, res: Response): Pro
        rab = await prisma.rAB.create({ data: { projectId } });
     }
 
-    // Clear existing RAB items to prevent duplicates when regenerating
-    await prisma.rABItem.deleteMany({
-      where: { rabId: rab.id }
+    // Fetch existing RAB items indexed by itemId (for smart upsert)
+    const existingItems = await prisma.rABItem.findMany({
+      where: { rabId: rab.id },
     });
+    const existingByItemId = new Map<string, typeof existingItems[0]>();
+    for (const ei of existingItems) {
+      if (ei.itemId) existingByItemId.set(ei.itemId, ei);
+    }
+
+    // Track which itemIds are in the new quotation (so we can remove obsolete ones)
+    const incomingItemIds = new Set<string>(quotation.items.map((i: any) => i.itemId).filter(Boolean));
 
     // Lookup ItemDistributor for each QuotationItem to compute Unit Cost
     const rabItemPromises = quotation.items.map(async (qItem) => {
@@ -129,21 +142,18 @@ export const generateRABFromQuotation = async (req: Request, res: Response): Pro
                  distributorId: qItem.distributorId
                }
              },
-             include: { distributor: true } // We need to fetch the distributor details specifically for the name
+             include: { distributor: true }
           });
 
           if (itemDistributor) {
              suppName = itemDistributor.distributor.name;
              description += ` - ${suppName}`;
 
-            // Formula: Unit Price = (Base Price - (Base Price * (Discount / 100))) * (1 + (Tax / 100))
             const basePrice = itemDistributor.basePrice;
             const discountPct = itemDistributor.discount;
             const taxPct = itemDistributor.tax;
 
             const netPrice = basePrice - (basePrice * (discountPct / 100));
-            // User requested tax to be applied. Some apply tax additively on net.
-            // Formula specified: (Base Price - (Base Price*Disc%)) + ((Base Price - (Base Price*Disc%)) * Tax%)
             const taxYield = netPrice * (taxPct / 100);
             unitCost = netPrice + taxYield;
           }
@@ -152,20 +162,48 @@ export const generateRABFromQuotation = async (req: Request, res: Response): Pro
 
       const totalPrice = unitCost * qItem.quantity;
 
-      // We don't want to duplicate items if they're already generated, but for simplicity we'll just append for now.
-      // Easiest is to create new RAB items
-      return prisma.rABItem.create({
-        data: {
-          rabId: rab!.id,
-          description: description,
-          quantity: qItem.quantity,
-          unit: itemNode?.unit || "Unit",
-          unitPrice: unitCost,
-          totalPrice: totalPrice,
-          supplier: suppName || null,
-        }
-      });
+      const existing = qItem.itemId ? existingByItemId.get(qItem.itemId) : null;
+
+      if (existing) {
+        // Update prices/description but PRESERVE the existing status
+        return prisma.rABItem.update({
+          where: { id: existing.id },
+          data: {
+            description,
+            quantity: qItem.quantity,
+            unit: itemNode?.unit || existing.unit,
+            unitPrice: unitCost,
+            totalPrice,
+            supplier: suppName || existing.supplier,
+            // status intentionally NOT updated — keep current value
+          },
+        });
+      } else {
+        // New item — create with default status
+        return prisma.rABItem.create({
+          data: {
+            rabId: rab!.id,
+            itemId: qItem.itemId || null,
+            description,
+            quantity: qItem.quantity,
+            unit: itemNode?.unit || "Unit",
+            unitPrice: unitCost,
+            totalPrice,
+            supplier: suppName || null,
+          },
+        });
+      }
     });
+
+    // Remove RABItems that were linked to an itemId no longer in the quotation
+    const obsoleteItems = existingItems.filter(
+      (ei) => ei.itemId && !incomingItemIds.has(ei.itemId)
+    );
+    if (obsoleteItems.length > 0) {
+      await prisma.rABItem.deleteMany({
+        where: { id: { in: obsoleteItems.map((i) => i.id) } },
+      });
+    }
 
     await Promise.all(rabItemPromises);
 
@@ -181,10 +219,16 @@ export const generateRABFromQuotation = async (req: Request, res: Response): Pro
       data: { totalEstimatedCost: newTotal }
     });
 
+    await prisma.project.update({
+      where: { id: rab.projectId },
+      data: { initialCapital: newTotal }
+    });
+
     console.log(`[RAB Generate] Successfully generated ${rabItemPromises.length} items. New total: ${newTotal}`);
 
     res.status(200).json({ success: true, message: 'RAB successfully generated from Quotation', data: updatedRab });
   } catch (error: any) {
+    console.error('[RAB Generation Error]', error.stack || error);
     res.status(500).json({ success: false, message: error.message });
   }
 };
@@ -222,6 +266,13 @@ export const updateRABItem = async (req: Request, res: Response): Promise<void> 
       data: { totalEstimatedCost: newTotal }
     });
 
+    if (rab) {
+      await prisma.project.update({
+        where: { id: rab.projectId },
+        data: { initialCapital: newTotal }
+      });
+    }
+
     res.json({ success: true, data: updatedItem });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
@@ -248,6 +299,13 @@ export const deleteRABItem = async (req: Request, res: Response): Promise<void> 
       where: { id: item.rabId },
       data: { totalEstimatedCost: newTotal }
     });
+
+    if (rab) {
+      await prisma.project.update({
+        where: { id: rab.projectId },
+        data: { initialCapital: newTotal }
+      });
+    }
 
     res.json({ success: true, message: 'RAB Item deleted successfully' });
   } catch (error: any) {

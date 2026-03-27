@@ -1,21 +1,38 @@
 import { Request, Response } from 'express';
 import prisma from '../prisma';
 import { bankersRound } from '../utils/math';
+import { logActivity } from '../utils/auditLogger';
+import { AuthRequest } from '../middlewares/authMiddleware';
 
 export const getPurchaseOrders = async (req: Request, res: Response): Promise<void> => {
-  const purchaseOrders = await prisma.purchaseOrder.findMany({
+  const purchaseOrders = await (prisma.purchaseOrder as any).findMany({
     include: {
       distributor: true,
       user: { select: { id: true, name: true } },
     },
     orderBy: { createdAt: 'desc' }
   });
-  res.status(200).json({ status: 'success', data: { purchaseOrders } });
+
+  const projectCodes = [...new Set(purchaseOrders.map((po: any) => po.projectCode).filter(Boolean))] as string[];
+  const projects = projectCodes.length > 0
+    ? await (prisma.project as any).findMany({
+        where: { code: { in: projectCodes } },
+        select: { id: true, code: true, name: true },
+      })
+    : [];
+  const projectByCode = new Map(projects.map((p: any) => [p.code, p]));
+
+  const enriched = purchaseOrders.map((po: any) => ({
+    ...po,
+    project: po.projectCode ? (projectByCode.get(po.projectCode) ?? null) : null,
+  }));
+
+  res.status(200).json({ status: 'success', data: { purchaseOrders: enriched } });
 };
 
 export const getPurchaseOrderById = async (req: Request, res: Response): Promise<void> => {
   const { id } = req.params as { id: string };
-  const po = await prisma.purchaseOrder.findUnique({
+  const po = await (prisma.purchaseOrder as any).findUnique({
     where: { id },
     include: {
       distributor: true,
@@ -31,7 +48,15 @@ export const getPurchaseOrderById = async (req: Request, res: Response): Promise
     return;
   }
 
-  res.status(200).json({ status: 'success', data: { purchaseOrder: po } });
+  let project = null;
+  if (po.projectCode) {
+    project = await (prisma.project as any).findUnique({
+      where: { code: po.projectCode },
+      select: { id: true, code: true, name: true },
+    });
+  }
+
+  res.status(200).json({ status: 'success', data: { purchaseOrder: { ...po, project } } });
 };
 
 export const updatePurchaseOrderStatus = async (req: Request, res: Response): Promise<void> => {
@@ -44,10 +69,51 @@ export const updatePurchaseOrderStatus = async (req: Request, res: Response): Pr
   }
 
   try {
-    const purchaseOrder = await prisma.purchaseOrder.update({
+    const po = await (prisma.purchaseOrder as any).findUnique({
+      where: { id },
+      include: { distributor: { select: { name: true } } },
+    });
+
+    if (!po) {
+      res.status(404).json({ status: 'error', message: 'Purchase Order not found' });
+      return;
+    }
+
+    const purchaseOrder = await (prisma.purchaseOrder as any).update({
       where: { id },
       data: { status },
     });
+
+    if (status === 'COMPLETED' && po.status !== 'COMPLETED') {
+      const vendorName = po.distributor?.name || 'Unknown Vendor';
+      const description = `PO ${po.poNumber} - ${vendorName}`;
+
+      const existing = await (prisma.cashFlowTransaction as any).findFirst({
+        where: { description, type: 'EXPENSE' },
+      });
+
+      if (!existing) {
+        await (prisma.cashFlowTransaction as any).create({
+          data: {
+            type: 'EXPENSE',
+            amount: po.total,
+            description,
+            category: '5101 - Harga Pokok Penjualan',
+            date: new Date(),
+          },
+        });
+      }
+    }
+
+    await logActivity({
+      action: 'UPDATE_STATUS',
+      entity: 'PurchaseOrder',
+      entityId: purchaseOrder.id,
+      details: `Purchase Order "${purchaseOrder.poNumber}" status updated to ${status}`,
+      userId: (req as AuthRequest).user?.id,
+      userName: (req as AuthRequest).user?.name,
+    });
+
     res.status(200).json({ status: 'success', data: { purchaseOrder } });
   } catch (error) {
     res.status(400).json({ status: 'error', message: 'Error updating purchase order status' });
@@ -64,10 +130,49 @@ export const updatePurchaseOrderItemStatus = async (req: Request, res: Response)
   }
 
   try {
-    const item = await prisma.purchaseOrderItem.update({
+    const item = await (prisma.purchaseOrderItem as any).update({
       where: { id: itemId, purchaseOrderId: id },
       data: { fulfillmentStatus },
     });
+
+    const statusMap: Record<string, string> = {
+      REQUESTED: 'REQUEST',
+      PAID: 'PAID',
+      IN_WAREHOUSE: 'IN_WAREHOUSE',
+      DELIVERED: 'DELIVERY',
+    };
+    const rabStatus = statusMap[fulfillmentStatus];
+
+    if (rabStatus && item.itemId) {
+      const po = await (prisma.purchaseOrder as any).findUnique({
+        where: { id },
+        select: { projectCode: true },
+      });
+
+      if (po?.projectCode) {
+        const project = await (prisma.project as any).findUnique({
+          where: { code: po.projectCode },
+          select: { id: true, rab: { select: { id: true } } },
+        });
+
+        if (project?.rab?.id) {
+          await (prisma.rABItem || (prisma as any).rabItem).updateMany({
+            where: { rabId: project.rab.id, itemId: item.itemId },
+            data: { status: rabStatus },
+          });
+        }
+      }
+    }
+
+    await logActivity({
+      action: 'UPDATE_ITEM_STATUS',
+      entity: 'PurchaseOrder',
+      entityId: id,
+      details: `Item status in PO updated to ${fulfillmentStatus}`,
+      userId: (req as AuthRequest).user?.id,
+      userName: (req as AuthRequest).user?.name,
+    });
+
     res.status(200).json({ status: 'success', data: { item } });
   } catch (error) {
     res.status(400).json({ status: 'error', message: 'Error updating item fulfillment status' });
@@ -77,10 +182,9 @@ export const updatePurchaseOrderItemStatus = async (req: Request, res: Response)
 export const generateFromQuotation = async (req: Request | any, res: Response): Promise<void> => {
   const { quotationId } = req.params;
   const userId = req.user?.id;
-  // Optional: only include specific quotation item IDs
   const { itemIds }: { itemIds?: string[] } = req.body || {};
 
-  const quotation = await prisma.quotation.findUnique({
+  const quotation = await (prisma.quotation as any).findUnique({
     where: { id: quotationId },
     include: {
       items: {
@@ -92,19 +196,17 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
       },
       project: true
     }
-  }) as any;
+  });
 
   if (!quotation) {
     res.status(404).json({ status: 'error', message: 'Quotation not found' });
     return;
   }
 
-  // Filter items if specific IDs were provided
   const sourceItems = (itemIds && itemIds.length > 0)
     ? quotation.items.filter((qi: any) => itemIds.includes(qi.id))
     : quotation.items;
 
-  // Group items by distributor
   const itemsByDistributor: Record<string, any[]> = {};
 
   sourceItems.forEach((qi: any) => {
@@ -121,24 +223,21 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
         taxRate = distInfo.tax || 0;
       }
 
-      // Calculation logic based on item parameters
       const rowSubtotal = basePrice * qi.quantity;
       const rowTaxAmount = bankersRound(rowSubtotal * (taxRate / 100));
-      const rowFinalTotal = rowSubtotal + rowTaxAmount;
 
       itemsByDistributor[qi.distributorId].push({
         itemId: qi.itemId,
         quantity: qi.quantity,
-        price: basePrice, // Store absolute base price
-        total: rowSubtotal, // Item total is just Qty * Unit Price
-        taxAmount: rowTaxAmount, // Add tax object for Grand Total sum
+        price: basePrice,
+        total: rowSubtotal,
+        taxAmount: rowTaxAmount,
       });
     }
   });
 
-  // Get highest sequence number for current month
   const currentYearMonth = `${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, '0')}`;
-  const lastPo = await prisma.purchaseOrder.findFirst({
+  const lastPo = await (prisma.purchaseOrder as any).findFirst({
     where: { poNumber: { startsWith: `PO-${currentYearMonth}-` } },
     orderBy: { poNumber: 'desc' },
   });
@@ -155,23 +254,21 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
   const generatedPOs = [];
 
   for (const distributorId of Object.keys(itemsByDistributor)) {
-    const items = itemsByDistributor[distributorId];
+    const distItems = itemsByDistributor[distributorId];
 
-    // Auto-generate PO Number
     currentSeq++;
     const poNum: string = `PO-${currentYearMonth}-${currentSeq.toString().padStart(4, '0')}`;
 
-    const total = items.reduce((sum, item) => sum + item.total + item.taxAmount, 0);
+    const total = distItems.reduce((sum, item) => sum + item.total + item.taxAmount, 0);
 
-    // Filter out the taxAmount helper property before database insertion
-    const itemsData = items.map((i) => ({
+    const itemsData = distItems.map((i) => ({
       itemId: i.itemId,
       quantity: i.quantity,
       price: i.price,
       total: i.total
     }));
 
-    const po = await prisma.purchaseOrder.create({
+    const po = await (prisma.purchaseOrder as any).create({
       data: {
         poNumber: poNum,
         distributorId,
@@ -184,6 +281,17 @@ export const generateFromQuotation = async (req: Request | any, res: Response): 
       }
     });
     generatedPOs.push(po);
+  }
+
+  for (const po of generatedPOs) {
+    await logActivity({
+      action: 'CREATE',
+      entity: 'PurchaseOrder',
+      entityId: po.id,
+      details: `Purchase Order "${po.poNumber}" generated from Quotation`,
+      userId: (req as AuthRequest).user?.id,
+      userName: (req as AuthRequest).user?.name,
+    });
   }
 
   res.status(201).json({ status: 'success', data: { generatedPurchaseOrders: generatedPOs } });

@@ -34,6 +34,7 @@ import accountingRoutes from './routes/accountingRoutes';
 import organizationRoutes from './routes/organizationRoutes';
 import projectRoutes from './routes/projectRoutes';
 import purchaseOrderRoutes from './routes/purchaseOrderRoutes';
+import auditLogRoutes from './routes/auditLogRoutes';
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -49,6 +50,7 @@ app.use('/api/accounting', accountingRoutes);
 app.use('/api/organizations', organizationRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/purchase-orders', purchaseOrderRoutes);
+app.use('/api/audit-logs', auditLogRoutes);
 
 app.get('/api/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'success', message: 'Backend is running' });

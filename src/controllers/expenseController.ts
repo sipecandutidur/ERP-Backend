@@ -1,107 +1,114 @@
 import { Request, Response } from 'express';
 import prisma from '../prisma';
 
-// Get Expenses by Project ID
-export const getExpensesByProject = async (req: Request, res: Response): Promise<void> => {
+export const getExpenses = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { id: projectId } = req.params as { id: string };
-
-    const expenses = await prisma.expense.findMany({
-      where: { projectId },
+    const expenses = await (prisma.expense as any).findMany({
+      include: {
+        project: {
+          select: { name: true, code: true }
+        }
+      },
       orderBy: { date: 'desc' },
     });
-
-    res.json({ success: true, data: expenses });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(200).json({ status: 'success', data: { expenses } });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: 'Failed to fetch expenses' });
   }
 };
 
-// Create Expense
-export const createExpense = async (req: Request, res: Response): Promise<void> => {
+export const getExpensesByProject = async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params as { id: string };
   try {
-    const { id: projectId } = req.params as { id: string };
-    const { expenseNumber, date, description, amount, category, receipt } = req.body;
+    const expenses = await (prisma.expense as any).findMany({
+      where: { projectId: id },
+      orderBy: { date: 'desc' },
+    });
+    res.status(200).json({ status: 'success', data: { expenses } });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: 'Failed to fetch expenses' });
+  }
+};
 
-    // Check unique expense number
-    if (expenseNumber) {
-        const existing = await prisma.expense.findUnique({ where: { expenseNumber }});
-        if (existing) {
-            res.status(400).json({ success: false, message: 'Expense Number must be unique' });
-            return;
-        }
+export const createExpense = async (req: Request, res: Response): Promise<void> => {
+  const { date, projectId, description, amount, category, receipt } = req.body;
+
+  if (!description || !amount) {
+    res.status(400).json({ status: 'error', message: 'Description and amount are required' });
+    return;
+  }
+
+  try {
+    const currentYearMonth = `${new Date().getFullYear()}${(new Date().getMonth() + 1).toString().padStart(2, '0')}`;
+    const lastExpense = await (prisma.expense as any).findFirst({
+      where: { expenseNumber: { startsWith: `EXP-${currentYearMonth}-` } },
+      orderBy: { expenseNumber: 'desc' },
+    });
+
+    let currentSeq = 0;
+    if (lastExpense) {
+      const parts = lastExpense.expenseNumber.split('-');
+      if (parts.length === 3) {
+        currentSeq = parseInt(parts[2], 10);
+        if (isNaN(currentSeq)) currentSeq = 0;
+      }
     }
+    currentSeq++;
+    const expenseNumber = `EXP-${currentYearMonth}-${currentSeq.toString().padStart(4, '0')}`;
 
-    // Auto-generate if empty
-    const generateNumber = () => {
-        const dateObj = new Date();
-        return `EXP-${dateObj.getFullYear().toString().substring(2)}${(dateObj.getMonth() + 1).toString().padStart(2, '0')}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
-    }
-
-    const finalExpenseNumber = expenseNumber || generateNumber();
-
-    const expense = await prisma.expense.create({
+    const expense = await (prisma.expense as any).create({
       data: {
+        expenseNumber,
         projectId,
-        expenseNumber: finalExpenseNumber,
-        date: date ? new Date(date) : new Date(),
         description,
-        amount: Number(amount),
+        amount,
         category,
         receipt,
-        cashFlow: {
+        cashFlowTransaction: {
           create: {
             date: date ? new Date(date) : new Date(),
             type: 'EXPENSE',
-            amount: Number(amount),
-            description: `Expense: ${finalExpenseNumber} - ${description}`,
-            category: category || '5210 - Beban Lain-lain',
+            amount,
+            description,
+            category,
           }
         }
       },
     });
 
-    res.status(201).json({ success: true, data: expense });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(201).json({ status: 'success', data: { expense } });
+  } catch (error) {
+    console.error("Create expense error:", error);
+    res.status(500).json({ status: 'error', message: 'Failed to record expense' });
   }
 };
 
-// Update Expense
 export const updateExpense = async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params as { id: string };
+  const { date, description, amount, category, receipt } = req.body;
   try {
-    const { id } = req.params as { id: string };
-    const { expenseNumber, date, description, amount, category, receipt } = req.body;
-
-    const expense = await prisma.expense.update({
+    const expense = await (prisma.expense as any).update({
       where: { id },
       data: {
-        expenseNumber,
         date: date ? new Date(date) : undefined,
         description,
-        amount: Number(amount),
+        amount,
         category,
         receipt,
       },
     });
-
-    res.json({ success: true, data: expense });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(200).json({ status: 'success', data: { expense } });
+  } catch (error) {
+    res.status(400).json({ status: 'error', message: 'Error updating expense' });
   }
 };
 
-// Delete Expense
 export const deleteExpense = async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params as { id: string };
   try {
-    const { id } = req.params as { id: string };
-
-    await prisma.expense.delete({
-      where: { id },
-    });
-
-    res.json({ success: true, message: 'Expense deleted successfully' });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
+    await (prisma.expense as any).delete({ where: { id } });
+    res.status(204).send();
+  } catch (error) {
+    res.status(400).json({ status: 'error', message: 'Error deleting expense' });
   }
 };
